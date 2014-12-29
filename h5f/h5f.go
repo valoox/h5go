@@ -1,0 +1,313 @@
+// This wraps the H5F* functions for file manipulation
+package h5f
+
+/*
+#cgo LDFLAGS: -lhdf5
+#include <hdf5.h>
+*/
+import "C"
+import (
+	"fmt"
+	"unsafe"
+)
+import (
+	"github.com/valoox/h5go/core"
+	"github.com/valoox/h5go/h5p"
+)
+
+// The default properties for flushing the files in the global
+// context or only local ids (see the HDF documentation for details)
+var (
+	GlobalFlush = false
+)
+
+// the type of close for files
+type CloseDegree int
+
+// Converts to the C representation of the int
+func (self CloseDegree) C() C.H5F_close_degree_t {
+	return C.H5F_close_degree_t(self)
+}
+
+const (
+	CLOSE_WEAK    CloseDegree = C.H5F_CLOSE_WEAK
+	CLOSE_SEMI    CloseDegree = C.H5F_CLOSE_SEMI
+	CLOSE_STRONG  CloseDegree = C.H5F_CLOSE_STRONG
+	CLOSE_DEFAULT CloseDegree = C.H5F_CLOSE_DEFAULT
+)
+
+// Creates a new file creation property list
+func Creation() (Crt, error) {
+	id, err := h5p.Create(h5p.FILE_CREATE)
+	return Crt(id), err
+}
+
+const (
+	// Default file creation flag
+	DefaultCreate = Crt(h5p.Default)
+	// Default file access
+	DefaultAccess = Acc(h5p.Default)
+)
+
+// Implements the property list for file creation
+type Crt h5p.Property
+
+// The SHARE ID of the object
+func (self Crt) Id() h5p.Property { return h5p.Property(self) }
+
+// The class of the file creation type
+func (self Crt) Class() h5p.Class { return h5p.FILE_CREATE }
+
+// Closes the property list
+func (self Crt) Close() error { return h5p.Close(self.Id()) }
+
+// Copies the property list
+func (self Crt) Copy() (Crt, error) {
+	id, err := h5p.Copy(self.Id())
+	return Crt(id), err
+}
+
+// Sets the close degree for the file creation
+// Close degree is given by the constants of
+// type CloseDegree
+func (self Crt) SetFClose(degree CloseDegree) error {
+	return core.Status(int(C.H5Pset_fclose_degree(C.hid_t(self),
+		degree.C())), "setting close degree property")
+}
+
+// Gets the close degree of the file creation
+func (self Crt) GetFClose() (CloseDegree, error) {
+	out := new(C.H5F_close_degree_t)
+	err := core.Status(int(C.H5Pget_fclose_degree(C.hid_t(self),
+		out)), "getting close degree property")
+	return CloseDegree(*out), err
+}
+
+// Creates a new file access property list
+func Access() (Acc, error) {
+	id, err := h5p.Create(h5p.FILE_ACCESS)
+	return Acc(id), err
+}
+
+// Implements the property list for file access
+type Acc h5p.Property
+
+// The HDF5 ID of the object
+func (self Acc) Id() h5p.Property { return h5p.Property(self) }
+
+// The class of the file access type
+func (self Acc) Class() h5p.Class { return h5p.FILE_ACCESS }
+
+// Closes the property list
+func (self Acc) Close() error { return h5p.Close(self.Id()) }
+
+// Copies the property list
+func (self Acc) Copy() (Acc, error) {
+	id, err := h5p.Copy(self.Id())
+	return Acc(id), err
+}
+
+// Sets the cache policy
+// Refer to the HDF5 documentation for H5Pset_cache for details
+// mdc_nelmts has been omitted as it is deprecated.
+// Other parameters are (copied from August 2014 version of the doc):
+// nslots: The number of chunk slots in the raw data chunk cache for this dataset. Increasing this value reduces the number of cache collisions, but slightly increases the memory used. Due to the hashing strategy, this value should ideally be a prime number. As a rule of thumb, this value should be at least 10 times the number of chunks that can fit in rdcc_nbytes bytes. For maximum performance, this value should be set approximately 100 times that number of chunks. The default value is 521.
+// binsize: Total size of the raw data chunk cache in bytes. The default size is 1 MB per dataset.
+// policy: The chunk preemption policy for all datasets. This must be between 0 and 1 inclusive and indicates the weighting according to which chunks which have been fully read or written are penalized when determining which chunks to flush from cache. A value of 0 means fully read or written chunks are treated no differently than other chunks (the preemption is strictly LRU) while a value of 1 means fully read or written chunks are always preempted before other chunks. If your application only reads or writes data once, this can be safely set to 1. Otherwise, this should be set lower depending on how often you re-read or re-write the same data.
+// The default value is 0.75. If the value passed is H5D_CHUNK_CACHE_W0_DEFAULT, then the property will not be set on dapl_id, and the parameter will come from the file access property list.
+func (self Acc) SetCache(nslots int, binsize int, policy float32) error {
+	return core.Status(int(C.H5Pset_cache(C.hid_t(self),
+		0, // Deprecated parameter -> passing 0
+		C.size_t(nslots),
+		C.size_t(binsize),
+		C.double(policy))),
+		"setting cache parameters")
+}
+
+// Returns the cache parameters, using the same meaning for
+// parameters as in the SetCache function
+func (self Acc) GetCache() (nslots int, binsize int, policy float32, err error) {
+	var n, b *C.size_t
+	p := new(C.double)
+	err = core.Status(int(C.H5Pget_cache(C.hid_t(self),
+		new(C.int), // deprecated parameter
+		n, b, p)),
+		"getting cache parameters")
+	if err != nil {
+		return
+	}
+	nslots = int(*n)
+	binsize = int(*b)
+	policy = float32(*p)
+	return
+}
+
+// Represents an HDF5 Id specifically for a file object
+type File core.Id
+
+// A file offers a location id
+func (F File) At() core.Id { return core.Id(F) }
+
+// The CORE.id of the file (its handle)
+func (F File) Id() core.Id { return core.Id(F) }
+
+// Flushes the file to the disk
+func (F File) Flush() error {
+	if err := Flush(F, GlobalFlush); err != nil {
+		return fmt.Errorf("Cannot flush %v: %s",
+			F, err)
+	}
+	return nil
+}
+
+// Closes the file, flushing its content to the disk.
+// If the file opened without error, this should be
+// immediately `defer`ed to ensure all resources are released.
+func (F File) Close() error {
+	if err := F.Flush(); err != nil {
+		return err
+	}
+	if err := Close(F); err != nil {
+		return fmt.Errorf("Error closing file%v: %s", F, err)
+	}
+	return nil
+}
+
+// Represents a flag for accessing a file
+type Flag uint
+
+// This should be loaded from the HDF5 libraries directly,
+// but somehow fails (probably weird macro expansions and
+// CGO not playing very well together), so these are redefined
+// here using the same syntax as the HDF5 access flags.
+// More accessible options combining these flags are available
+// for finer grain control on the files
+// See H5Fpublic.h for the definitions of the values
+const (
+	RO     Flag = 0  // Read-only
+	RW     Flag = 1  // Read-write
+	TRUNC  Flag = 2  // Overwrite
+	EXCL   Flag = 4  // Raises an exception if file exists
+	DEBUG  Flag = 8  // Prints debug info
+	CREATE Flag = 16 // Create new file, raises an exception if file exists
+)
+
+// Represents the default value for the flag, ignoring
+// all existing values
+const DEFAULT Flag = 0xffffff
+
+// If the Id is <0, returns some error. Otherwise, simply returns
+// the Id of the file, and a nil error
+func try(id File, msg string, args ...interface{}) (File, error) {
+	return id, core.Status(int(id), fmt.Sprintf(msg, args...))
+}
+
+// Wraps the H5Fcreate function
+func Create(path string, flag Flag, c Crt, a Acc) (File, error) {
+	return try(File(C.H5Fcreate(C.CString(path),
+		C.unsigned(flag),
+		C.hid_t(c.Id()),
+		C.hid_t(a.Id()))),
+		"Creating file at %s", path)
+}
+
+// Wraps the H5Fopen function
+func Open(path string, flag Flag, a Acc) (File, error) {
+	return try(File(C.H5Fopen(C.CString(path),
+		C.unsigned(flag),
+		C.hid_t(a.Id()))),
+		"opening file %s", path)
+}
+
+// Wraps the H5Freopen function, reopening the file with a new Id
+func Reopen(id File) (File, error) {
+	return try(File(C.H5Freopen(C.hid_t(id))),
+		"reopening fileid=%v", id)
+}
+
+// Closes the file, wrapping H5Fclose
+func Close(id File) error {
+	return core.Status(int(C.H5Fclose(C.hid_t(id))),
+		"closing fileid=%v", id)
+}
+
+// Flushes the content of the file to the disk, wrapping H5Fflush
+// The `global` boolean parameter states whether the scope should
+// be H5F_SCOPE_LOCAL (global=false) or H5F_SCOPE_GLOBAL (global=true)
+func Flush(fileid File, global bool) error {
+	scope := C.H5F_SCOPE_LOCAL
+	if global {
+		scope = C.H5F_SCOPE_GLOBAL
+	}
+	return core.Status(int(C.H5Fflush(C.hid_t(fileid),
+		C.H5F_scope_t(scope))),
+		"flushing fileid=%v", fileid)
+}
+
+// The type of the objects
+type Kind uint
+
+// The different types
+const (
+	FileType      Kind = C.H5F_OBJ_FILE
+	DatasetType   Kind = C.H5F_OBJ_DATASET
+	GroupType     Kind = C.H5F_OBJ_GROUP
+	AttributeType Kind = C.H5F_OBJ_ATTR
+	AllTypes      Kind = C.H5F_OBJ_ALL
+	Local         Kind = C.H5F_OBJ_LOCAL
+)
+
+// C representation of the type
+func (self Kind) C() C.unsigned { return C.unsigned(self) }
+
+// All the types
+var all_kinds = []Kind{FileType, DatasetType,
+	GroupType, AttributeType}
+
+// Describes the object
+type Object struct {
+	// The id of the object
+	Id core.Id
+	// The Type of the object
+	Kind Kind
+}
+
+// Gets the _entire_ content of the file as an array of Object
+// describing the type of the objects returned and their ids
+func GetAll(file File) ([]Object, error) {
+	out := make([]Object, 0, 10)
+	for _, T := range all_kinds {
+		ids, err := GetIds(file, T)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			out = append(out, Object{id, T})
+		}
+	}
+	return out, nil
+}
+
+// Gets _all_ the IDs in the file for the given type(s),
+// wrapping both the H5Fget_obj_count and H5Fget_obj_ids functions
+func GetIds(file File, typ Kind) ([]core.Id, error) {
+	f := C.hid_t(file)
+	types := (typ | Local).C()
+	nb := C.H5Fget_obj_count(f, types)
+	err := core.Status(int(nb), "getting number of objects")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]C.hid_t, int(nb)+1)
+	actual := C.H5Fget_obj_ids(f, types, C.size_t(nb),
+		(*C.hid_t)(unsafe.Pointer(&out[0])))
+	err = core.Status(int(actual), "getting objects ID")
+	if err != nil {
+		return nil, err
+	}
+	res := make([]core.Id, int(actual))
+	for i, id := range out[:int(actual)] {
+		res[i] = core.Id(id)
+	}
+	return res, nil
+}

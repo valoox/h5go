@@ -1,0 +1,693 @@
+// This wraps the H5T* functions for creating and manipulating
+// data types
+package h5t
+
+/*
+#cgo LDFLAGS: -lhdf5
+#include <hdf5.h>
+#include "types.h"
+*/
+import "C"
+import (
+	"fmt"
+	"unsafe"
+)
+import (
+	"github.com/valoox/h5go/core"
+	"github.com/valoox/h5go/h5l"
+	"github.com/valoox/h5go/h5p"
+)
+
+// Default creation/access properties
+const (
+	DefaultCreate = Crt(h5p.Default)
+	DefaultAccess = Acc(h5p.Default)
+)
+
+// Creates a new creation property list
+func Creation() (Crt, error) {
+	id, err := h5p.Create(h5p.DATATYPE_CREATE)
+	return Crt(id), err
+}
+
+// Creates a new access property list
+func Access() (Acc, error) {
+	id, err := h5p.Create(h5p.DATATYPE_ACCESS)
+	return Acc(id), err
+}
+
+// Creation property list
+type Crt h5p.Property
+
+// The Property list ID
+func (self Crt) Id() h5p.Property { return h5p.Property(self) }
+
+// Copies the property list
+func (self Crt) Copy() (Crt, error) {
+	id, err := h5p.Copy(self.Id())
+	return Crt(id), err
+}
+
+// The class of the property list
+func (self Crt) Class() h5p.Class { return h5p.DATATYPE_CREATE }
+
+// Disposes of the resource
+func (self Crt) Close() error { return h5p.Close(self.Id()) }
+
+// Class for group access
+type Acc h5p.Property
+
+// The property list id
+func (self Acc) Id() h5p.Property { return h5p.Property(self) }
+
+// Copies the property list
+func (self Acc) Copy() (Acc, error) {
+	id, err := h5p.Copy(self.Id())
+	return Acc(id), err
+}
+
+// The class of the property list
+func (self Acc) Class() h5p.Class { return h5p.DATATYPE_ACCESS }
+
+// Disposes of the resource
+func (self Acc) Close() error { return h5p.Close(self.Id()) }
+
+// Represents the different classes of types
+type Class int
+
+// C representation of the class int
+func (cls Class) C() C.H5T_class_t { return C.H5T_class_t(cls) }
+
+// The name of the class, as a simple string
+// (mainly used for debugging)
+func (cls Class) Name() string {
+	if cls < 0 {
+		return "None"
+	}
+	return classnames[int(cls)]
+}
+
+// Constants shared between the types
+const (
+	SIGNED   = C.H5T_SGN_2    // Signed type
+	UNSIGNED = C.H5T_SGN_NONE // Unsigned type
+	VARIABLE = C.H5T_VARIABLE // Variable sized-type
+)
+
+// The different classes
+const (
+	NO_CLASS Class = C.H5T_NO_CLASS
+	INTEGER  Class = C.H5T_INTEGER
+	FLOAT    Class = C.H5T_FLOAT
+	TIME     Class = C.H5T_TIME
+	STRING   Class = C.H5T_STRING
+	BITFIELD Class = C.H5T_BITFIELD
+	OPAQUE   Class = C.H5T_OPAQUE
+	COMPOUND Class = C.H5T_COMPOUND
+	REF      Class = C.H5T_REFERENCE
+	ENUM     Class = C.H5T_ENUM
+	VLEN     Class = C.H5T_VLEN
+	ARRAY    Class = C.H5T_ARRAY
+)
+
+// The byte order
+type Order int
+
+const (
+	LittleEndian Order = C.H5T_ORDER_LE
+	BigEndian    Order = C.H5T_ORDER_BE
+	MixedVAX     Order = C.H5T_ORDER_VAX // Mixed endianness
+)
+
+// The total number of classes
+const ttl = C.H5T_NCLASSES
+
+// The string names for each of the classes
+var classnames = [ttl]string{
+	"Int",
+	"Float",
+	"Time",
+	"String",
+	"Bitfield",
+	"Opaque",
+	"Compound",
+	"Reference",
+	"Enum",
+	"Varlen",
+	"Array",
+}
+
+// Processes a Datatype, returning an error if it is negative or nil
+// if it is ok
+func try(id Datatype, context string, args ...interface{}) (Datatype, error) {
+	return id, core.Status(int(id), fmt.Sprintf(context, args...))
+}
+
+// Represents an Id specifically for a Type
+type Datatype core.Id
+
+// core.Id of the object
+func (t Datatype) Id() core.Id { return core.Id(t) }
+
+// Closes the datatype
+// Wraps H5Tclose
+func (t Datatype) Close() error {
+	return core.Status(int(C.H5Tclose(C.hid_t(t))),
+		"closing datatype")
+}
+
+// Makes a copy of the datatype
+// Wraps H5Tcopy
+func (t Datatype) Copy() (Datatype, error) {
+	return try(Datatype(C.H5Tcopy(C.hid_t(t))),
+		"copying datatype")
+}
+
+// Changes the encoding size of the type, setting it to `bytes` bytes
+// Wraps the H5Tset_size function
+func (t Datatype) SetSize(bytes int) error {
+	return core.Status(int(C.H5Tset_size(C.hid_t(t),
+		C.size_t(bytes))), "setting bytes size")
+}
+
+// Sets the endianness of the datatype
+func (t Datatype) SetEndian(endian Order) error {
+	return core.Status(int(C.H5Tset_order(C.hid_t(t),
+		C.H5T_order_t(endian))), "setting endianness")
+}
+
+// Sets the signedness of a numerical value
+// Wraps H5Tset_sign function
+func (t Datatype) SetSign(signed bool) error {
+	var s int
+	if signed {
+		s = SIGNED
+	} else {
+		s = UNSIGNED
+	}
+	return core.Status(int(C.H5Tset_sign(C.hid_t(t),
+		C.H5T_sign_t(s))), "setting signedness")
+}
+
+// Encodes the value into a binary array
+// Wraps the H5Tencode function
+func (t Datatype) Encode() ([]byte, error) {
+	var sze C.size_t
+	if err := core.Status(int(C.H5Tencode(
+		C.hid_t(t), nil, &sze)),
+		"computing encoding size"); err != nil {
+		return nil, err
+	}
+	bin := make([]byte, int(sze))
+	return bin, core.Status(int(C.H5Tencode(C.hid_t(t),
+		unsafe.Pointer(&bin[0]),
+		&sze)),
+		"encoding datatype")
+}
+
+// Commits the type to the location
+func (t Datatype) Commit(in core.Location, name string,
+	links h5l.Crt, create Crt, access Acc) error {
+	return core.Status(int(C.H5Tcommit2(C.hid_t(in.At()),
+		C.CString(name),
+		C.hid_t(t),
+		C.hid_t(links),
+		C.hid_t(create),
+		C.hid_t(access))), "committing datatype %s", name)
+}
+
+// Creates a new type storing the base class on the number of bytes
+// Wraps te H5Tcreate function. Additional modifications can be done
+// using the other functions in this package (SetSize, SetSign...)
+func Create(base Class, bytes int) (Datatype, error) {
+	return try(Datatype(C.H5Tcreate(base.C(), C.size_t(bytes))),
+		"creating datatype")
+}
+
+// Opens a saved datatype from the location
+func Open(from core.Location, name string, access Acc) (Datatype, error) {
+	return try(Datatype(C.H5Topen(
+		C.hid_t(from.At()),
+		C.CString(name),
+		C.hid_t(access))),
+		"opening saved datatype %s", name)
+}
+
+// Checks for type equality, wrapping H5Tequal
+func Eq(T1, T2 Datatype) bool {
+	return (C.H5Tequal(C.hid_t(T1), C.hid_t(T2)) > 0)
+}
+
+// Decodes a binary representation of a type
+// Wraps the H5Tdecode function
+func Decode(bin []byte) (Datatype, error) {
+	if len(bin) > 0 {
+		try(Datatype(C.H5Tdecode(unsafe.Pointer(&bin[0]))),
+			"decoding encoded datatype")
+	}
+	return -1, fmt.Errorf("Empty array")
+}
+
+// Initialises the different types
+// Defines the basic types which can be used
+func init() {
+	C.init()
+}
+
+/** Implementation of the Go native types */
+
+// 1byte integer
+func Int8() (i Datatype, err error) {
+	if i, err = Datatype(C.NCHAR).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(1); err != nil {
+		return
+	}
+	err = i.SetSign(true)
+	return
+}
+
+// 16bits (2 bytes) signed integer
+func Int16() (i Datatype, err error) {
+	if i, err = Datatype(C.NSHORT).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(2); err != nil {
+		return
+	}
+	err = i.SetSign(true)
+	return
+}
+
+// Creates a new int32 type
+func Int32() (i Datatype, err error) {
+	// Sets the I32 integer to 32 bits (4 bytes) signed
+	if i, err = Datatype(C.NINT).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(4); err != nil {
+		return
+	}
+	err = i.SetSign(true)
+	return
+}
+
+// Creates a new int64 type
+func Int64() (i Datatype, err error) {
+	if i, err = Datatype(C.NLONG).Copy(); err != nil {
+		return
+	}
+	// Sets the I64 integer to 64 bits (8 bytes) signed
+	if err = i.SetSize(8); err != nil {
+		return
+	}
+	err = i.SetSign(true)
+	return
+}
+
+// Unsigned char
+func Uint8() (i Datatype, err error) {
+	if i, err = Datatype(C.NUCHAR).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(1); err != nil {
+		return
+	}
+	err = i.SetSign(false)
+	return
+}
+
+func Uint16() (i Datatype, err error) {
+	if i, err = Datatype(C.NUSHORT).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(2); err != nil {
+		return
+	}
+	err = i.SetSign(false)
+	return
+}
+
+// Creates a new unsigned int32 type
+func Uint32() (i Datatype, err error) {
+	// Sets the Uint32 integer to 32 bits (4 bytes) unsigned
+	if i, err = Datatype(C.NUINT).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(4); err != nil {
+		return
+	}
+	err = i.SetSign(false)
+	return
+}
+
+// Creates a new unsigned int32 type
+func Uint64() (i Datatype, err error) {
+	// Sets the Uint64 integer to 64 bits (8 bytes) unsigned
+	if i, err = Datatype(C.NULONG).Copy(); err != nil {
+		return
+	}
+	if err = i.SetSize(8); err != nil {
+		return
+	}
+	err = i.SetSign(false)
+	return
+}
+
+// Creates a new float32 IEEE type
+func Float32() (f Datatype, err error) {
+	// Sets F32 to 32bits (4 bytes) float
+	if f, err = Datatype(C.NFLOAT).Copy(); err != nil {
+		return
+	}
+	err = f.SetSize(4)
+	return
+}
+
+// Creates a new float64 (double) IEEE type
+func Float64() (f Datatype, err error) {
+	// Sets F64 to 64bits (8 bytes) double
+	if f, err = Datatype(C.NDOUBLE).Copy(); err != nil {
+		return
+	}
+	err = f.SetSize(8)
+	return
+}
+
+// A Go complex number, as a simple small structure made of
+// two float32 numbers
+func Complex64() (c Datatype, err error) {
+	f, err := Float32()
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+	return Struct(8, Field{"re", f, 0}, Field{"im", f, 4})
+}
+
+// A Go complex number, as a simple small structure made of
+// two float64 numbers
+func Complex128() (c Datatype, err error) {
+	f, err := Float64()
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+	return Struct(16, Field{"re", f, 0}, Field{"im", f, 8})
+}
+
+// Boolean as a single bit
+func Bool() (b Datatype, err error) {
+	return Datatype(C.NBOOL).Copy()
+}
+
+// A single byte as an unsigned 1byte integer
+func Byte() (b Datatype, err error) {
+	b, err = Datatype(C.N8).Copy()
+	if err != nil {
+		return
+	}
+	// Sets the byte to one byte (duh) and unsigned
+	if err = b.SetSize(1); err != nil {
+		return
+	}
+	err = b.SetSign(false)
+	return
+}
+
+// Rune is an alias for int32, as per the Go specs
+func Rune() (Datatype, error) {
+	return Int32()
+}
+
+/** More complex datatypes (bin arrays, structures, strings...) */
+
+// Represents a raw uninterpreted binary array of the given length
+// The length is provided in bytes
+func RawBin(length int) (Datatype, error) {
+	return Create(OPAQUE, length)
+}
+
+// Creates a string type
+// If length is >=0, this will be used as the type for the string
+// and the type will be fixed length. If length <0, variable
+// string is assumed (this might result in lost performance).
+// The utf8 flag states whether the encoding should be UTF-8
+// (true) or ASCII (false)
+func String(length int, utf8 bool) (T Datatype, err error) {
+	if length < 0 {
+		T, err = varstring()
+	} else {
+		T, err = Create(STRING, length)
+	}
+	if err != nil {
+		return
+	}
+	if utf8 {
+		err = core.Status(int(
+			C.H5Tset_cset(C.hid_t(T),
+				C.H5T_CSET_UTF8)),
+			"setting UTF-8 encoding")
+	} else {
+		err = core.Status(int(
+			C.H5Tset_cset(C.hid_t(T),
+				C.H5T_CSET_ASCII)),
+			"setting ASCII encoding")
+	}
+	return
+}
+
+// Creates a variable length string
+func varstring() (T Datatype, err error) {
+	if T, err = Datatype(C.VSTRING).Copy(); err != nil {
+		return
+	}
+	err = T.SetSize(VARIABLE)
+	return
+}
+
+// Creates a variable-length array of object of this type
+func List(T Datatype) (Datatype, error) {
+	return try(Datatype(C.H5Tvlen_create(C.hid_t(T))),
+		"creating varlength array datatype")
+}
+
+// Creates a N-dimensional array with the provided dimensions
+func NDarray(T Datatype, dims ...uint) (Datatype, error) {
+	rank := len(dims)
+	cdims := make([]C.hsize_t, rank)
+	for i, d := range dims {
+		cdims[i] = C.hsize_t(d)
+	}
+	return try(Datatype(C.H5Tarray_create2(C.hid_t(T),
+		C.unsigned(rank),
+		&cdims[0])), "creating NDarray datatype")
+}
+
+// Represents a field of a structure
+type Field struct {
+	// The name of the field
+	Name string
+	// The type of the field
+	Type Datatype
+	// The offset of the field
+	Offset int
+}
+
+// Creates a compound structure from the provided set of fields
+func Struct(fullsize int, fields ...Field) (T Datatype, err error) {
+	T, err = Create(COMPOUND, fullsize)
+	if err != nil {
+		return
+	}
+	for _, fld := range fields {
+		err = core.Status(int(C.H5Tinsert(
+			C.hid_t(T),
+			C.CString(fld.Name),
+			C.size_t(fld.Offset),
+			C.hid_t(fld.Type))),
+			"setting field %s of structure", fld.Name)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+// The interface shared by the different enumerated types
+type Enum interface {
+	core.Object
+	// Associated the name to the given value
+	Insert(name string, value uint64) error
+	// Gets the name associated with the value
+	NameOf(value uint64) (string, error)
+	// Gets the value associated with the name
+	ValueOf(name string) (uint64, error)
+}
+
+// An enumeration embeds a datatype and offers capabilities for
+// storing enumerated values
+type enum struct{ Datatype }
+
+// The 4 different sizes of enumerations
+type enum8 enum
+type enum16 enum
+type enum32 enum
+type enum64 enum
+
+// Creates a new enumeration from the given native type
+func mkenum(T C.hid_t) (Datatype, error) {
+	return try(Datatype(C.H5Tenum_create(T)), "creating enum")
+}
+
+// Creates a new enumeration datatype.
+// The size provided gives the number of bits to use
+// as the base integer for storing the enum, one of
+// 8, 16, 32 or 64
+func NewEnum(size uint8) (Enum, error) {
+	switch size {
+	case 8:
+		T, err := mkenum(C.N8)
+		return enum8{T}, err
+	case 16:
+		T, err := mkenum(C.N16)
+		return enum16{T}, err
+	case 32:
+		T, err := mkenum(C.N32)
+		return enum32{T}, err
+	case 64:
+		T, err := mkenum(C.N64)
+		return enum64{T}, err
+	}
+	return nil, fmt.Errorf("Invalid size: %v", size)
+}
+
+// Sets a value in an enum
+func enumset(e Enum, name string, ptr unsafe.Pointer) error {
+	return core.Status(int(C.H5Tenum_insert(
+		C.hid_t(e.Id()),
+		C.CString(name),
+		ptr)), "adding enum value")
+}
+
+// Gets the value of the enum
+func enumvalue(e Enum, name string, ptr unsafe.Pointer) error {
+	return core.Status(int(C.H5Tenum_valueof(
+		C.hid_t(e.Id()),
+		C.CString(name),
+		ptr)), "getting enum value")
+}
+
+// Gets the name associated with the value
+func enumname(e Enum, ptr unsafe.Pointer) (string, error) {
+	out := make([]C.char, 8)
+	err := core.Status(int(C.H5Tenum_nameof(
+		C.hid_t(e.Id()),
+		ptr,
+		&out[0],
+		C.size_t(len(out)))), "getting enum name")
+	// Last character is set and not null:
+	// this means the name is too big and buffer should
+	// be resized
+	for err != nil && out[len(out)-1] != 0 {
+		out = make([]C.char, 2*len(out))
+		err = core.Status(int(C.H5Tenum_nameof(
+			C.hid_t(e.Id()),
+			ptr,
+			&out[0],
+			C.size_t(len(out)))), "getting enum name")
+	}
+	if err != nil {
+		return "", err
+	}
+	str := make([]byte, 0, len(out))
+	for _, x := range out {
+		if x == 0 {
+			return string(str), nil
+		}
+		str = append(str, byte(x))
+	}
+	return string(str), nil
+
+}
+
+// Inserts a new enumerated value
+func (e enum8) Insert(name string, val uint64) error {
+	// Trims the integer to match HDF type
+	this := uint8(val)
+	return enumset(e, name, unsafe.Pointer(&this))
+}
+
+// Gets the name corresponding to the enumerated value
+func (e enum8) NameOf(i uint64) (string, error) {
+	this := uint8(i)
+	return enumname(e, unsafe.Pointer(&this))
+}
+
+// Gets the value associated with the name
+func (e enum8) ValueOf(name string) (uint64, error) {
+	out := new(uint8)
+	err := enumvalue(e, name, unsafe.Pointer(out))
+	return uint64(*out), err
+}
+
+// Inserts a new enumerated value
+func (e enum16) Insert(name string, val uint64) error {
+	// Trims the integer to match HDF type
+	this := uint16(val)
+	return enumset(e, name, unsafe.Pointer(&this))
+}
+
+// Gets the name corresponding to the enumerated value
+func (e enum16) NameOf(i uint64) (string, error) {
+	this := uint16(i)
+	return enumname(e, unsafe.Pointer(&this))
+}
+
+// Gets the value associated with the name
+func (e enum16) ValueOf(name string) (uint64, error) {
+	out := new(uint16)
+	err := enumvalue(e, name, unsafe.Pointer(out))
+	return uint64(*out), err
+}
+
+// Inserts a new enumerated value
+func (e enum32) Insert(name string, val uint64) error {
+	// Trims the integer to match HDF type
+	this := uint32(val)
+	return enumset(e, name, unsafe.Pointer(&this))
+}
+
+// Gets the name corresponding to the enumerated value
+func (e enum32) NameOf(i uint64) (string, error) {
+	this := uint32(i)
+	return enumname(e, unsafe.Pointer(&this))
+}
+
+// Gets the value associated with the name
+func (e enum32) ValueOf(name string) (uint64, error) {
+	out := new(uint32)
+	err := enumvalue(e, name, unsafe.Pointer(out))
+	return uint64(*out), err
+}
+
+// Inserts a new enumerated value
+func (e enum64) Insert(name string, val uint64) error {
+	// Trims the integer to match HDF type
+	this := uint64(val)
+	return enumset(e, name, unsafe.Pointer(&this))
+}
+
+// Gets the name corresponding to the enumerated value
+func (e enum64) NameOf(i uint64) (string, error) {
+	this := uint64(i)
+	return enumname(e, unsafe.Pointer(&this))
+}
+
+// Gets the value associated with the name
+func (e enum64) ValueOf(name string) (uint64, error) {
+	out := new(uint64)
+	err := enumvalue(e, name, unsafe.Pointer(out))
+	return *out, err
+}

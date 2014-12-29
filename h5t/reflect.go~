@@ -1,0 +1,7 @@
+package h5t
+
+// Parses the type of the provided object, and returns the
+// corresponding HDF5 datatype
+func ParseType(obj interface{}) (Datatype, error) {
+
+}

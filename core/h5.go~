@@ -1,0 +1,213 @@
+package core
+
+/******************************************************************
+ This file wraps the H5* family of function, which represent the
+ low-level interface for general tasks, such as initialising the
+ library, flushing everything once the tasks have been completed,
+ and other administrative tasks on the file
+*******************************************************************/
+
+/*
+#cgo LDFLAGS: -lhdf5
+#include <hdf5.h>
+*/
+import "C"
+import (
+	"fmt"
+
+	"github.com/valoox/h5go/core"
+)
+
+// The sizes for the limits
+const (
+	_  = iota // Ignores zero
+	KB = 1 << (10 * iota)
+	MB
+	GB
+	TB
+	PB
+	EB
+)
+
+// Represents a byte unit
+type unit uint
+
+// String representation of the unit
+func (self unit) String() string {
+	switch self {
+	case KB:
+		return "KB"
+	case MB:
+		return "MB"
+	case GB:
+		return "GB"
+	case TB:
+		return "TB"
+	case PB:
+		return "PB"
+	case EB:
+		return "EB"
+	}
+	return "B"
+}
+
+// Textual representation of a size in bytes into a more
+// convenient unit
+func binsize(size uint) string {
+	if size < 0 {
+		return "INF"
+	}
+	for _, u := range []unit{EB, PB, TB, GB, MB, KB} {
+		if rat := size / uint(u); rat >= 1 {
+			return fmt.Sprintf("%v%s", rat, u)
+		}
+	}
+	return fmt.Sprintf("%vB")
+}
+
+// Initialises the library. This should technically not be
+// entirely necessary, but better safe than sorry.
+// This will typically be called in the `Init` function of
+// a package or in the `main` to make sure everything is
+// loaded properly
+// Wraps the H5open function
+func Init() error {
+	return core.Status(int(C.H5open()), "opening library")
+}
+
+// Performs a garbage collection on free HDF5 values.
+// This should not be required for general cases, but
+// might be useful for really memory-intensive applications
+// Wraps the H5garbage_collect function
+func GC() error {
+	return core.Status(int(C.H5garbage_collect()), "garbage collecting")
+}
+
+// This provokes a complete close of the HDF5 library,
+// closing all resources still open and releasing all
+// resources. This might be a nice `defer`ed call in
+// main, but should otherwise be avoided
+// Wraps the H5close function
+func Close() error {
+	return core.Status(int(C.H5close()), "closing library")
+}
+
+// Checks that the version this was compiled against
+// matches the current version
+// Wraps the H5check_version function
+func CheckVersion(major, minor, release uint) bool {
+	return C.H5check_version(C.uint(major),
+		C.uint(minor),
+		C.uint(release)) >= 0
+}
+
+// Gets the version of the loaded HDF5 library
+// This returns Major, Minor, Realease as integers, and possibly
+// an error (or nil) if it cannot load them
+// Wraps the H5get_libversion function
+func GetVersion() (uint, uint, uint, error) {
+	var major, minor, release C.uint
+	if err := core.Status(int(
+		C.H5get_libversion(&major, &minor, &release)),
+		"getting library version"); err != nil {
+		return 0, 0, 0, err
+	}
+	return uint(major), uint(minor), uint(release), nil
+}
+
+// The current limits, initialised to the default value
+var Limits = &limits{
+	Reg_global: 1 * MB,
+	Reg_list:   64 * KB,
+	Arr_global: 4 * MB,
+	Arr_list:   256 * KB,
+	Blk_global: 16 * MB,
+	Blk_list:   1 * MB,
+}
+
+// Represents all the limits for the free lists when handling
+// memory management of the application.
+type limits struct {
+	Reg_global, Reg_list,
+	Arr_global, Arr_list,
+	Blk_global, Blk_list uint
+}
+
+// Returns the current limits, in bytes
+// Order is:
+// Regular lists (per-list, global)
+// Array lists (per-list, global)
+// Block lists (per-list, global)
+func (self *limits) Current() [3][2]uint {
+	return [3][2]uint{
+		[2]uint{self.Reg_list, self.Reg_global},
+		[2]uint{self.Arr_list, self.Arr_global},
+		[2]uint{self.Blk_list, self.Blk_global},
+	}
+}
+
+// The format of the limits
+const format = `Free list limits (per-list/global):
+  - Regular lists: %s/%s
+  - Array lists:   %s/%s
+  - Block lists:   %s/%s`
+
+// String representation of the limits
+func (self *limits) String() string {
+	return fmt.Sprintf(format,
+		binsize(self.Reg_list),
+		binsize(self.Reg_global),
+		binsize(self.Arr_list),
+		binsize(self.Arr_global),
+		binsize(self.Blk_list),
+		binsize(self.Blk_global))
+}
+
+// Sets the regular lists limit, returning whether the limit was
+// set. Invalid limits (e.g. per-list limit larger than the global
+// limit) will not be set and simply return false
+func (self *limits) Regular(list, global uint) bool {
+	if list > global {
+		return false
+	}
+	self.Reg_list = list
+	self.Reg_global = global
+	return true
+}
+
+// Sets the array limit, in bytes, returning whether the limit
+// was set. Invalid limits (e.g. per-list limit larger than
+// the global limit) will not be set and simply return false
+func (self *limits) Array(list, global uint) bool {
+	if list > global {
+		return false
+	}
+	self.Arr_list = list
+	self.Arr_global = global
+	return true
+}
+
+// Sets the block limit, in bytes, returning whether the limit
+// was set. Invalid limits (e.g. per-list limit larger than
+// the global limit) will not be set and simply return false
+func (self *limits) Block(list, global uint) bool {
+	if list > global {
+		return false
+	}
+	self.Blk_list = list
+	self.Blk_global = global
+	return true
+}
+
+// Sets the new limits in the C code
+// Wraps the H5set_free_list_limits function
+func (self *limits) Set() error {
+	return core.Status(int(C.H5set_free_list_limits(
+		C.int(self.Reg_global),
+		C.int(self.Reg_list),
+		C.int(self.Arr_global),
+		C.int(self.Arr_list),
+		C.int(self.Blk_global),
+		C.int(self.Blk_list))),
+		"setting list limits")
+}

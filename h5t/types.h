@@ -1,0 +1,37 @@
+#include <H5Tpublic.h>
+
+// Defines standard types (defined as macros) as variables
+// to be used in Go
+
+// Native int types
+hid_t NCHAR, NUCHAR, NSHORT, NUSHORT, NINT, NUINT, NLONG, NULONG;
+// Native types by binary size
+hid_t N8, N16, N32, N64;
+// Other native types
+hid_t NBOOL, NFLOAT, NDOUBLE;;
+// String type
+hid_t VSTRING;
+// Initialises the value by parsing the macros
+static void init() {
+  // Native types
+  NCHAR = H5T_NATIVE_CHAR;
+  NUCHAR = H5T_NATIVE_UCHAR;
+  NSHORT = H5T_NATIVE_SHORT;
+  NUSHORT = H5T_NATIVE_USHORT;
+  NINT = H5T_NATIVE_INT;
+  NUINT = H5T_NATIVE_UINT;
+  NLONG = H5T_NATIVE_LONG;
+  NULONG = H5T_NATIVE_ULONG;
+
+  N8 = H5T_NATIVE_B8;
+  N16 = H5T_NATIVE_B16;
+  N32 = H5T_NATIVE_B32;
+  N64 = H5T_NATIVE_B64;
+
+  NBOOL = H5T_NATIVE_HBOOL;
+  NFLOAT = H5T_NATIVE_FLOAT;
+  NDOUBLE = H5T_NATIVE_DOUBLE;
+
+  // Variable length-string
+  VSTRING = H5T_C_S1;
+}

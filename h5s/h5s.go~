@@ -1,0 +1,157 @@
+// This wraps the H5S* functions, which implement creation and
+// manipulation of the dataspaces
+package h5s
+
+/*
+#cgo LDFLAGS: -lhdf5
+#include <hdf5.h>
+*/
+import "C"
+
+import (
+	"fmt"
+	"unsafe"
+
+	"github.com/valoox/h5go/hdf5"
+)
+
+// An Id specifically for the dataspace objects
+type Id hdf5.Id
+
+// Miscellaneous constants being used throughout the package
+const (
+	// Represents all data to be used, typically as an argument
+	// in large read/write operations
+	ALL Id = C.H5S_ALL
+)
+
+// Selection operators
+const (
+	SET  = C.H5S_SELECT_SET  // The SET operator
+	AND  = C.H5S_SELECT_AND  // The AND selection operator
+	OR   = C.H5S_SELECT_OR   // The OR selection operator
+	XOR  = C.H5S_SELECT_XOR  // The XOR selection operator
+	NOTA = C.H5S_SELECT_NOTA // A NOTA B: {x \in B | x \notin A}
+	NOTB = C.H5S_SELECT_NOTB // A NOTB B: {x \in A | x \notin B}
+)
+
+// Represents the different classes of dataspaces
+type Class int
+
+// C representation of the class index
+func (cls Class) C() C.H5S_class_t {
+	return C.H5S_class_t(cls)
+}
+
+// The default classes of dataspaces
+const (
+	SCALAR Class = C.H5S_SCALAR // Scalar (single element)
+	SIMPLE Class = C.H5S_SIMPLE // Simple (n-dims hyperrectangle)
+	NULL   Class = C.H5S_NULL   // Null (no element)
+)
+
+// Returns the Id with a possible error if the id was negative
+func try(id Id, context string, args ...interface{}) (Id, error) {
+	return id, hdf5.Status(int(id), fmt.Sprintf(context, args...))
+}
+
+// Creates a new dataspace from a given class
+// Wraps H5Screate function
+func Create(cls Class) (Id, error) {
+	return try(Id(C.H5Screate(cls.C())), "creating datatype")
+}
+
+// Copy the dataspace
+func Copy(id Id) (Id, error) {
+	return try(Id(C.H5Scopy(C.hid_t(id))), "copying dataspace")
+}
+
+// Disposes of the datatype. Wraps H5Sclose
+func Close(id Id) error {
+	return hdf5.Status(int(C.H5Sclose(C.hid_t(id))),
+		"closing dataspace")
+}
+
+// Encodes the dataspace into a binary array
+func Encode(id Id) ([]byte, error) {
+	var sze C.size_t
+	if err := hdf5.Status(int(C.H5Sencode(C.hid_t(id), nil,
+		&sze)), "computing encoding size"); err != nil {
+		return nil, err
+	}
+	bin := make([]byte, int(sze))
+	return bin, hdf5.Status(int(C.H5Sencode(C.hid_t(id),
+		unsafe.Pointer(&bin[0]),
+		&sze)),
+		"encoding dataspace")
+}
+
+// Decodes the array of bytes into a dataspace
+func Decode(bin []byte) (Id, error) {
+	if len(bin) > 0 {
+		return try(Id(C.H5Sdecode(unsafe.Pointer(&bin[0]))),
+			"decoding dataspace")
+	}
+	return -1, fmt.Errorf("Empty array")
+}
+
+// Creates a simple N-dimensional array dataspace for
+// the data (what HDF5 calls a 'simple' dataspace) using
+// the provided dimensions
+// The Shape provided will contain the dimensions of the
+// ND array. Maxs is optional, and nil can be passed to
+// set the limit to the current dimension (i.e. redimension
+// is forbidden). Otherwise, it provides limits to the
+// expansion of the dataspace in the given dimensions to
+// its number.
+// If maxs is < 0, the value will be replaced by 'unlimited'
+// and the array can be expanded in this dimension without limit
+func CreateSimple(shape []int, maxs []int) (Id, error) {
+	n := len(shape)
+	current := make([]C.hsize_t, n)
+	for i, dim := range shape {
+		current[i] = C.hsize_t(dim)
+	}
+	var mx *C.hsize_t
+	if maxs != nil {
+		if len(maxs) != n {
+			return -1, fmt.Errorf("Invalid max length: expecting %v, got %v instead.", n, len(maxs))
+		}
+		a := make([]C.hsize_t, len(maxs))
+		for i, m := range maxs {
+			if m < 0 {
+				a[i] = 0xffffffff & C.H5S_UNLIMITED
+			} else {
+				a[i] = C.hsize_t(m)
+			}
+		}
+		mx = &a[0]
+	}
+	return try(Id(C.H5Screate_simple(C.int(n), &current[0], mx)),
+		"creating simple dataspace")
+}
+
+// The C coordinates for the pointer
+func ccoords(args []int) *C.hsize_t {
+	if args == nil || len(args) == 0 {
+		return nil
+	}
+	cargs := make([]C.hsize_t, len(args))
+	for i, arg := range args {
+		cargs[i] = C.hsize_t(arg)
+	}
+	return &cargs[0]
+}
+
+// Wraps the H5Sselect_hyperslab function with operator SELECT_SET
+// Note that the sp id is then DISCARDED -> its new value is the
+// selection
+func SelectHSlab(sp Id, start, stride, count, block []int) (Id, error) {
+	err := hdf5.Status(int(C.H5Sselect_hyperslab(C.hid_t(sp),
+		SET,
+		ccoords(start),
+		ccoords(stride),
+		ccoords(count),
+		ccoords(block))), "selecting hyperslab")
+	return sp, err
+}
